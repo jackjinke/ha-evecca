@@ -1,0 +1,60 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "连接易慧家",
+        "menu_options": {
+          "password": "密码登录",
+          "sms": "短信验证码登录"
+        }
+      },
+      "password": {
+        "title": "易慧家密码登录",
+        "data": {
+          "username": "手机号",
+          "password": "密码"
+        }
+      },
+      "sms": {
+        "title": "易慧家短信登录",
+        "data": {
+          "username": "手机号"
+        }
+      },
+      "sms_code": {
+        "title": "输入短信验证码",
+        "data": {
+          "code": "验证码"
+        }
+      },
+      "family": {
+        "title": "选择易慧家家庭",
+        "data": {
+          "family_id": "家庭"
+        }
+      },
+      "reauth_confirm": {
+        "title": "重新认证易慧家",
+        "menu_options": {
+          "password": "密码登录",
+          "sms": "短信验证码登录"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接易慧家服务",
+      "invalid_auth": "认证失败",
+      "invalid_code": "验证码只能包含数字",
+      "unknown": "发生未知错误"
+    },
+    "abort": {
+      "already_configured": "该易慧家账号已经配置",
+      "cannot_connect": "无法连接易慧家服务",
+      "family_not_found": "已配置的家庭不存在",
+      "no_families": "未找到易慧家家庭",
+      "reauth_successful": "认证信息已更新",
+      "unknown": "发生未知错误",
+      "wrong_account": "登录账号与当前配置不一致"
+    }
+  }
+}

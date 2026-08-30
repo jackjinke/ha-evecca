@@ -1,0 +1,12 @@
+{
+  "domain": "evecca",
+  "name": "EVECCA",
+  "codeowners": ["@jackjinke"],
+  "config_flow": true,
+  "documentation": "https://github.com/jackjinke/ha-evecca",
+  "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/jackjinke/ha-evecca/issues",
+  "requirements": ["aiomqtt==2.5.1"],
+  "version": "0.1.0"
+}

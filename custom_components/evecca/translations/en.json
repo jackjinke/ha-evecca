@@ -1,0 +1,60 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to EVECCA",
+        "menu_options": {
+          "password": "Password",
+          "sms": "SMS code"
+        }
+      },
+      "password": {
+        "title": "EVECCA password login",
+        "data": {
+          "username": "Phone number",
+          "password": "Password"
+        }
+      },
+      "sms": {
+        "title": "EVECCA SMS login",
+        "data": {
+          "username": "Phone number"
+        }
+      },
+      "sms_code": {
+        "title": "Enter SMS code",
+        "data": {
+          "code": "Verification code"
+        }
+      },
+      "family": {
+        "title": "Select EVECCA home",
+        "data": {
+          "family_id": "Home"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate EVECCA",
+        "menu_options": {
+          "password": "Password",
+          "sms": "SMS code"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to EVECCA",
+      "invalid_auth": "Invalid authentication",
+      "invalid_code": "The verification code must contain digits only",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This EVECCA account is already configured",
+      "cannot_connect": "Cannot connect to EVECCA",
+      "family_not_found": "The configured home no longer exists",
+      "no_families": "No EVECCA homes were found",
+      "reauth_successful": "Authentication updated",
+      "unknown": "Unexpected error",
+      "wrong_account": "The login belongs to a different EVECCA account"
+    }
+  }
+}
