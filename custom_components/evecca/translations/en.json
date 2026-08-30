@@ -58,6 +58,21 @@
     }
   },
   "entity": {
+    "button": {
+      "recalibrate_travel": {
+        "name": "Relearn travel"
+      }
+    },
+    "select": {
+      "controller_function": {
+        "name": "Function",
+        "state": {
+          "default": "Default",
+          "normally_open": "Normally open",
+          "normally_closed": "Normally closed"
+        }
+      }
+    },
     "sensor": {
       "window_mode": {
         "name": "Window mode",

@@ -47,8 +47,8 @@ async def async_setup_entry(
 
 class EveccaCover(CoordinatorEntity[EveccaCoordinator], CoverEntity):
     """Representation of one EVECCA window actuator."""
-
     _attr_device_class = CoverDeviceClass.WINDOW
+
     _attr_has_entity_name = True
     _attr_name = None
 

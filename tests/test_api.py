@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from custom_components.evecca.api import (
     EveccaApi,
     EveccaApiError,
     EveccaAuthError,
+    async_discover_base_url,
 )
 
 
@@ -41,6 +43,41 @@ class FakeSession:
         """Capture a POST request."""
         self.requests.append({"url": url, **kwargs})
         return FakeResponse(self.body)
+
+    async def get(self, url: str, **kwargs: Any) -> FakeResponse:
+        """Capture a GET request."""
+        self.requests.append({"url": url, **kwargs})
+        return FakeResponse(self.body)
+
+
+def test_discovers_current_api_endpoint() -> None:
+    """Startup discovers the same service endpoint as the official app."""
+    session = FakeSession(
+        {
+            "success": True,
+            "result": {"list": ["https://whaleapp.evecca.cn:5707/test_v002"]},
+        }
+    )
+
+    endpoint = asyncio.run(async_discover_base_url(session))
+
+    assert endpoint == "https://whaleapp.evecca.cn:5707/test_v002"
+    assert session.requests[0]["url"].endswith("/serList")
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://attacker.example/test_v002",
+        "https://evecca.cn@attacker.example/test_v002",
+        "https://whaleapp.evecca.cn/test_v002?redirect=attacker",
+    ],
+)
+def test_rejects_untrusted_api_endpoints(endpoint: str) -> None:
+    """Discovery cannot redirect credentials outside an EVECCA origin."""
+    session = FakeSession({"success": True, "result": {"list": [endpoint]}})
+
+    assert asyncio.run(async_discover_base_url(session)) is None
 
 
 def test_authorization_header_is_compact_base64_json() -> None:
@@ -87,6 +124,54 @@ def test_password_login_posts_md5_and_returns_session() -> None:
     assert result.token == "token-value"
     assert result.user_id == 12345
     assert result.mqtt.host == "mqtt2.evecca.cn"
+
+
+def test_reads_error_catalog_from_api() -> None:
+    """The app error catalog is parsed into numeric device event codes."""
+    session = FakeSession(
+        {
+            "success": True,
+            "code": 200,
+            "result": {
+                "ver": "1",
+                "codes": {"4404": "解锁失败", "4634": "需要手动复位"},
+            },
+        }
+    )
+    api = EveccaApi(session)
+    auth = SimpleNamespace(token="token-value", user_id=12345)
+
+    catalog = asyncio.run(api.async_error_codes(auth))
+
+    assert catalog.version == "1"
+    assert catalog.codes[4404] == "解锁失败"
+    assert session.requests[0]["url"].endswith("/getErrs")
+
+
+def test_set_property_uses_captured_endpoint() -> None:
+    """Controller functions use the captured setProperties contract."""
+    session = FakeSession({"success": True, "code": 200, "result": {}})
+    api = EveccaApi(session)
+    auth = SimpleNamespace(token="token-value", user_id=12345)
+
+    asyncio.run(
+        api.async_set_property(
+            auth,
+            58639119,
+            49845623,
+            2,
+            dpid=50397241,
+        )
+    )
+
+    request = session.requests[0]
+    assert request["url"].endswith("/setProperties")
+    assert json.loads(request["data"]) == {
+        "fId": 58639119,
+        "devId": 49845623,
+        "dpid": 50397241,
+        "value": 2,
+    }
 
 
 def test_token_failure_maps_to_auth_error() -> None:

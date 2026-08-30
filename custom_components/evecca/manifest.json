@@ -8,5 +8,5 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/jackjinke/ha-evecca/issues",
   "requirements": ["aiomqtt==2.5.1"],
-  "version": "0.2.1"
+  "version": "0.3.0"
 }

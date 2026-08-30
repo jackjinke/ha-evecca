@@ -43,6 +43,36 @@ def test_parse_position_and_run_message() -> None:
     assert update.run_value == 6
 
 
+def test_parse_device_event_report() -> None:
+    """Device event reports preserve the code for translated notifications."""
+    payload = json.dumps(
+        {
+            "method": "event_report",
+            "params": [{"did": 87654321, "dpid": 50462721, "value": 4404}],
+        }
+    ).encode()
+
+    update = parse_mqtt_message("12345678/87654321/report", payload, 12345678)
+
+    assert update is not None
+    assert update.event_code == 4404
+
+
+def test_parse_controller_function_property() -> None:
+    """Controller normally-open/closed state is normalized."""
+    payload = json.dumps(
+        {
+            "method": "properties_changed",
+            "params": [{"did": 87654321, "dpid": 50397241, "value": 2}],
+        }
+    ).encode()
+
+    update = parse_mqtt_message("12345678/87654321/report", payload, 12345678)
+
+    assert update is not None
+    assert update.normally_oc == 2
+
+
 def test_ignore_other_families_and_invalid_payloads() -> None:
     """Malformed or unrelated MQTT messages are ignored."""
     assert parse_mqtt_message("1/87654321/online", b"{}", 12345678) is None
@@ -50,6 +80,7 @@ def test_ignore_other_families_and_invalid_payloads() -> None:
         parse_mqtt_message("12345678/87654321/online", b"not json", 12345678)
         is None
     )
+
 
 def test_ignore_non_utf8_and_non_object_payloads() -> None:
     """Malformed bytes and non-object JSON do not terminate the listener."""

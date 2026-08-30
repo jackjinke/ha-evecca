@@ -1,6 +1,9 @@
 """Tests for EVECCA API models."""
 
-from custom_components.evecca.const import WINDOW_MODE_OPEN
+from custom_components.evecca.const import (
+    CONTROLLER_FUNCTION_NORMALLY_CLOSED,
+    WINDOW_MODE_OPEN,
+)
 from custom_components.evecca.models import EveccaDevice
 
 
@@ -114,6 +117,13 @@ def test_controller_device_parses_directives() -> None:
             "directives": [
                 {"cmd": "flash", "dpid": 33619969, "value": 16},
             ],
+            "options": [
+                {
+                    "key": "normally_oc",
+                    "dpid": 50397241,
+                    "value": 2,
+                }
+            ],
         },
         "测试房",
     )
@@ -122,3 +132,4 @@ def test_controller_device_parses_directives() -> None:
     assert device.actions["flash"] == 16
     assert device.window_mode is None
     assert device.locked is None
+    assert device.controller_function == CONTROLLER_FUNCTION_NORMALLY_CLOSED

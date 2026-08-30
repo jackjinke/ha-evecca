@@ -3,15 +3,26 @@
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from typing import Any
 
+from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import EveccaApi, EveccaApiError, EveccaAuthError, EveccaConnectionError
 from .const import (
+    ACTION_LABELS,
+    CONTROLLER_FUNCTION_BY_VALUE,
+    CONTROLLER_FUNCTION_LABELS,
+    CONTROLLER_FUNCTION_VALUES,
+    DOMAIN,
+    DPID_NORMALLY_OC,
+    DPID_POSITION_SET,
     LOCK_STATE_BY_RUN_VALUE,
+    MODEL_CONTROLLER_PREFIX,
     MODEL_LOCK_PREFIX,
     MODEL_WINDOW_PREFIX,
     OPTIMISTIC_TIMEOUT,
@@ -20,6 +31,7 @@ from .const import (
     WINDOW_MODE_CLOSED,
     WINDOW_MODE_OPEN,
 )
+from .device_info import device_display_name
 from .models import EveccaDevice, EveccaSession
 from .mqtt import EveccaMqttUpdate
 from .runtime import EveccaConfigEntry
@@ -69,9 +81,45 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         self.session = session
         self.family_id = family_id
         self._entry = config_entry
+        self.error_codes: dict[int, str] = {}
+        self._error_store = Store[dict[str, Any]](
+            hass,
+            1,
+            f"{DOMAIN}_{config_entry.entry_id}_error_codes",
+        )
         self._pending: dict[int, PendingState] = {}
         self._pending_cancels: dict[int, Callable[[], None]] = {}
         config_entry.async_on_unload(self._cancel_all_pending)
+
+    async def async_load_error_codes(self) -> None:
+        """Load cached error texts, then refresh them like the official app."""
+        cached = await self._error_store.async_load()
+        if isinstance(cached, dict):
+            raw_codes = cached.get("codes")
+            if isinstance(raw_codes, dict):
+                self.error_codes = {
+                    int(code): str(text)
+                    for code, text in raw_codes.items()
+                    if str(code).isdigit()
+                }
+
+        try:
+            catalog = await self.api.async_error_codes(self.session)
+        except (EveccaApiError, EveccaAuthError, EveccaConnectionError) as err:
+            _LOGGER.debug("Cannot refresh EVECCA error catalog: %s", err)
+            return
+        if not catalog.codes:
+            return
+
+        self.error_codes = dict(catalog.codes)
+        await self._error_store.async_save(
+            {
+                "version": catalog.version,
+                "codes": {
+                    str(code): text for code, text in catalog.codes.items()
+                },
+            }
+        )
 
     async def _async_update_data(self) -> EveccaData:
         """Fetch a full device snapshot from EVECCA."""
@@ -102,7 +150,9 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         *,
         dpid: int,
     ) -> None:
-        """Send a command and refresh state."""
+        """Send a command, notify its API result, and refresh state."""
+        device = self._device(device_id)
+        action = self._action_label(dpid, value)
         try:
             await self.api.async_action(
                 self.session,
@@ -112,10 +162,46 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
                 dpid=dpid,
             )
         except EveccaAuthError as err:
+            self._notify_command(device, action, "认证已过期")
             self._entry.async_start_reauth(self.hass)
             raise HomeAssistantError("EVECCA authentication expired") from err
         except (EveccaApiError, EveccaConnectionError) as err:
+            self._notify_command(device, action, str(err))
             raise HomeAssistantError(f"EVECCA command failed: {err}") from err
+
+        self._notify_command(device, action)
+        await self.async_request_refresh()
+
+    async def async_set_controller_function(
+        self,
+        device_id: int,
+        function: str,
+    ) -> None:
+        """Set the controller to default, normally open, or normally closed."""
+        device = self._device(device_id)
+        if device is None or function not in CONTROLLER_FUNCTION_VALUES:
+            raise HomeAssistantError("Unsupported EVECCA controller function")
+        label = f"设置为{CONTROLLER_FUNCTION_LABELS[function]}"
+        try:
+            await self.api.async_set_property(
+                self.session,
+                self.family_id,
+                device_id,
+                CONTROLLER_FUNCTION_VALUES[function],
+                dpid=DPID_NORMALLY_OC,
+            )
+        except EveccaAuthError as err:
+            self._notify_command(device, label, "认证已过期")
+            self._entry.async_start_reauth(self.hass)
+            raise HomeAssistantError("EVECCA authentication expired") from err
+        except (EveccaApiError, EveccaConnectionError) as err:
+            self._notify_command(device, label, str(err))
+            raise HomeAssistantError(f"EVECCA command failed: {err}") from err
+
+        current = self._device(device_id)
+        if current is not None:
+            self._set_device(replace(current, controller_function=function))
+        self._notify_command(device, label)
         await self.async_request_refresh()
 
     def set_window_target(
@@ -207,6 +293,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         device = self.data.devices[update.device_id]
         window_mode = device.window_mode
         locked = device.locked
+        controller_function = device.controller_function
         if device.model.startswith(MODEL_WINDOW_PREFIX):
             window_mode = WINDOW_MODE_BY_RUN_VALUE.get(
                 update.run_value,
@@ -214,6 +301,14 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             )
         elif device.model.startswith(MODEL_LOCK_PREFIX):
             locked = LOCK_STATE_BY_RUN_VALUE.get(update.run_value, device.locked)
+        elif (
+            device.model.startswith(MODEL_CONTROLLER_PREFIX)
+            and update.normally_oc is not None
+        ):
+            controller_function = CONTROLLER_FUNCTION_BY_VALUE.get(
+                update.normally_oc,
+                device.controller_function,
+            )
 
         updated = replace(
             device,
@@ -225,6 +320,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             ),
             window_mode=window_mode,
             locked=locked,
+            controller_function=controller_function,
             online=update.online if update.online is not None else device.online,
         )
         self._set_actual_device(
@@ -239,6 +335,8 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
                 and update.run_value in LOCK_STATE_BY_RUN_VALUE
             ),
         )
+        if update.event_code is not None:
+            self._notify_device_event(updated, update.event_code)
 
     def _merge_https_device(
         self,
@@ -276,6 +374,15 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             merged = replace(
                 merged,
                 locked=previous.locked if previous is not None else None,
+            )
+        if (
+            merged.model.startswith(MODEL_CONTROLLER_PREFIX)
+            and merged.controller_function is None
+            and previous is not None
+        ):
+            merged = replace(
+                merged,
+                controller_function=previous.controller_function,
             )
         return merged
 
@@ -397,6 +504,46 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
                 else device.window_mode
             ),
             locked=pending.locked if pending.locked is not None else device.locked,
+        )
+
+    @staticmethod
+    def _action_label(dpid: int, value: int) -> str:
+        """Return a user-readable command label."""
+        if dpid == DPID_POSITION_SET:
+            return f"设置开合百分比为 {value}%"
+        return ACTION_LABELS.get(value, f"发送命令 {value}")
+
+    @callback
+    def _notify_command(
+        self,
+        device: EveccaDevice | None,
+        action: str,
+        error: str | None = None,
+    ) -> None:
+        """Notify that a cloud command was accepted or rejected."""
+        if device is None:
+            return
+        message = (
+            f"{action}失败: {error}"
+            if error is not None
+            else f"{action}命令已发送。"
+        )
+        persistent_notification.async_create(
+            self.hass,
+            message,
+            title=f"EVECCA · {device_display_name(device)}",
+            notification_id=f"evecca_command_{device.device_id}",
+        )
+
+    @callback
+    def _notify_device_event(self, device: EveccaDevice, code: int) -> None:
+        """Translate and notify one device event reported over MQTT."""
+        text = self.error_codes.get(code, "未知设备事件")
+        persistent_notification.async_create(
+            self.hass,
+            f"{text} ({code})",
+            title=f"EVECCA · {device_display_name(device)}",
+            notification_id=f"evecca_event_{device.device_id}",
         )
 
     def _set_device(self, device: EveccaDevice) -> None:

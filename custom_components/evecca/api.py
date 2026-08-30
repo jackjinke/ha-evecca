@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientResponse, ClientSession
 
@@ -16,8 +17,9 @@ from .const import (
     CLIENT_OS,
     DPID_ACTION,
     REQUEST_TIMEOUT,
+    SERVICE_LIST_URL,
 )
-from .models import EveccaDevice, EveccaFamily, EveccaSession
+from .models import EveccaDevice, EveccaErrorCatalog, EveccaFamily, EveccaSession
 
 _UNSET = object()
 _AUTH_ERROR_CODES = {99, 4008, 4014}
@@ -42,6 +44,55 @@ class EveccaApiError(EveccaError):
         """Initialize the API error."""
         super().__init__(message)
         self.code = code
+
+
+async def async_discover_base_url(session: ClientSession) -> str | None:
+    """Discover the current EVECCA API endpoint like the official app."""
+    try:
+        async with asyncio.timeout(REQUEST_TIMEOUT):
+            response = await session.get(
+                SERVICE_LIST_URL,
+                headers={"Accept": "application/json", "User-Agent": "ha-evecca"},
+            )
+            body = await response.text()
+    except (TimeoutError, ClientError):
+        return None
+
+    if response.status >= 400:
+        return None
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("success") is not True:
+        return None
+    result = data.get("result")
+    if not isinstance(result, dict):
+        return None
+    endpoints = result.get("list") or []
+    if not isinstance(endpoints, list):
+        return None
+    for endpoint in endpoints:
+        if not isinstance(endpoint, str):
+            continue
+        try:
+            parsed = urlsplit(endpoint)
+        except ValueError:
+            continue
+        hostname = (parsed.hostname or "").lower()
+        trusted_host = hostname in {"evecca.cn", "evecca.com"} or hostname.endswith(
+            (".evecca.cn", ".evecca.com")
+        )
+        if (
+            parsed.scheme == "https"
+            and trusted_host
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            return endpoint.rstrip("/")
+    return None
 
 
 class EveccaApi:
@@ -133,6 +184,16 @@ class EveccaApi:
         )
         return [EveccaFamily.from_api(item) for item in result]
 
+    async def async_error_codes(self, session: EveccaSession) -> EveccaErrorCatalog:
+        """Return EVECCA's current device event/error catalog."""
+        result = await self._post(
+            "/getErrs",
+            None,
+            token=session.token,
+            user_id=session.user_id,
+        )
+        return EveccaErrorCatalog.from_api(result)
+
     async def async_devices(
         self,
         session: EveccaSession,
@@ -182,6 +243,23 @@ class EveccaApi:
         """Send a device command."""
         await self._post(
             "/actionDevice",
+            {"fId": family_id, "devId": device_id, "dpid": dpid, "value": value},
+            token=session.token,
+            user_id=session.user_id,
+        )
+
+    async def async_set_property(
+        self,
+        session: EveccaSession,
+        family_id: int,
+        device_id: int,
+        value: int,
+        *,
+        dpid: int,
+    ) -> None:
+        """Set a device configuration property."""
+        await self._post(
+            "/setProperties",
             {"fId": family_id, "devId": device_id, "dpid": dpid, "value": value},
             token=session.token,
             user_id=session.user_id,

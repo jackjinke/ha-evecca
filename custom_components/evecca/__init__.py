@@ -6,8 +6,15 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import EveccaApi, EveccaApiError, EveccaAuthError, EveccaConnectionError
+from .api import (
+    EveccaApi,
+    EveccaApiError,
+    EveccaAuthError,
+    EveccaConnectionError,
+    async_discover_base_url,
+)
 from .const import (
+    BASE_URL,
     CONF_FAMILY_ID,
     CONF_HW_ID,
     CONF_MQTT_HOST,
@@ -25,16 +32,25 @@ from .models import EveccaMqttConfig, EveccaSession
 from .mqtt import EveccaMqttClient
 from .runtime import EveccaConfigEntry, EveccaRuntimeData
 
-PLATFORMS = [Platform.COVER, Platform.LOCK, Platform.SENSOR]
+PLATFORMS = [
+    Platform.BUTTON,
+    Platform.COVER,
+    Platform.LOCK,
+    Platform.SELECT,
+    Platform.SENSOR,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: EveccaConfigEntry) -> bool:
     """Set up EVECCA from a config entry."""
-    api = EveccaApi(async_get_clientsession(hass))
+    http_session = async_get_clientsession(hass)
+    base_url = await async_discover_base_url(http_session)
+    api = EveccaApi(http_session, base_url=base_url or BASE_URL)
     session = await _async_refresh_session(hass, entry, api)
     family_id = entry.data[CONF_FAMILY_ID]
 
     coordinator = EveccaCoordinator(hass, entry, api, session, family_id)
+    await coordinator.async_load_error_codes()
     mqtt = EveccaMqttClient(
         session.mqtt,
         family_id,

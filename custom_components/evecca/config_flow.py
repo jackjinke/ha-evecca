@@ -18,8 +18,15 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .api import EveccaApi, EveccaApiError, EveccaAuthError, EveccaConnectionError
+from .api import (
+    EveccaApi,
+    EveccaApiError,
+    EveccaAuthError,
+    EveccaConnectionError,
+    async_discover_base_url,
+)
 from .const import (
+    BASE_URL,
     CONF_FAMILY_ID,
     CONF_FAMILY_NAME,
     CONF_HW_ID,
@@ -45,6 +52,7 @@ class EveccaConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize flow state."""
         self._hw_id = str(uuid.uuid4())
+        self._base_url = BASE_URL
         self._username: str | None = None
         self._session: EveccaSession | None = None
         self._families: dict[str, EveccaFamily] = {}
@@ -53,6 +61,10 @@ class EveccaConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Ask for the preferred login method."""
+        self._base_url = (
+            await async_discover_base_url(async_get_clientsession(self.hass))
+            or BASE_URL
+        )
         return self.async_show_menu(
             step_id="user",
             menu_options=["password", "sms"],
@@ -184,6 +196,10 @@ class EveccaConfigFlow(ConfigFlow, domain=DOMAIN):
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Start reauthentication for an existing entry."""
+        self._base_url = (
+            await async_discover_base_url(async_get_clientsession(self.hass))
+            or BASE_URL
+        )
         self._username = str(entry_data.get(CONF_USERNAME, ""))
         self._hw_id = str(entry_data.get(CONF_HW_ID, self._hw_id))
         return await self.async_step_reauth_confirm()
@@ -286,7 +302,10 @@ class EveccaConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def _api(self) -> EveccaApi:
         """Return an API client for this flow."""
-        return EveccaApi(async_get_clientsession(self.hass))
+        return EveccaApi(
+            async_get_clientsession(self.hass),
+            base_url=self._base_url,
+        )
 
 
 def _password_schema(username: str | None) -> vol.Schema:

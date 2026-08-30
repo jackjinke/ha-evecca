@@ -5,7 +5,10 @@ from types import MappingProxyType
 from typing import Any, Self
 
 from .const import (
+    CONTROLLER_FUNCTION_BY_VALUE,
+    DPID_NORMALLY_OC,
     LOCK_STATE_BY_RUN_VALUE,
+    MODEL_CONTROLLER_PREFIX,
     MODEL_LOCK_PREFIX,
     MODEL_WINDOW_PREFIX,
     WINDOW_MODE_BY_RUN_VALUE,
@@ -71,6 +74,29 @@ class EveccaFamily:
 
 
 @dataclass(frozen=True, slots=True)
+class EveccaErrorCatalog:
+    """EVECCA device event/error code catalog."""
+
+    version: str | None
+    codes: MappingProxyType[int, str]
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> Self:
+        """Build an error catalog from the getErrs response."""
+        raw_codes = data.get("codes") or {}
+        codes = {
+            int(code): str(text)
+            for code, text in raw_codes.items()
+            if _optional_int(code) is not None
+        }
+        version = data.get("ver")
+        return cls(
+            version=str(version) if version is not None else None,
+            codes=MappingProxyType(codes),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class EveccaDevice:
     """One EVECCA controller, window actuator, or lock."""
 
@@ -87,6 +113,7 @@ class EveccaDevice:
     lock_value: int | None
     window_mode: str | None
     locked: bool | None
+    controller_function: str | None
     is_ready: bool
     online: bool | None
     actions: MappingProxyType[str, int]
@@ -127,6 +154,19 @@ class EveccaDevice:
             if locked is None and lock_value in (0, 1):
                 locked = bool(lock_value)
 
+        controller_function = None
+        if model.startswith(MODEL_CONTROLLER_PREFIX):
+            function_value = _optional_int(
+                (data.get("db_dpid") or {}).get(str(DPID_NORMALLY_OC))
+            )
+            for option in data.get("options") or ():
+                if (
+                    option.get("key") == "normally_oc"
+                    or _optional_int(option.get("dpid")) == DPID_NORMALLY_OC
+                ):
+                    function_value = _optional_int(option.get("value"))
+            controller_function = CONTROLLER_FUNCTION_BY_VALUE.get(function_value)
+
         return cls(
             device_id=int(data["devId"]),
             family_id=int(data["fId"]),
@@ -141,6 +181,7 @@ class EveccaDevice:
             lock_value=lock_value,
             window_mode=window_mode,
             locked=locked,
+            controller_function=controller_function,
             is_ready=bool(data.get("isReady")),
             online=None,
             actions=MappingProxyType(actions),

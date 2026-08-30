@@ -10,6 +10,8 @@ from typing import Any
 import aiomqtt
 
 from .const import (
+    DPID_EVENT,
+    DPID_NORMALLY_OC,
     DPID_ONLINE,
     DPID_POSITION_STATE,
     DPID_RUN_STATE,
@@ -77,6 +79,8 @@ class EveccaMqttUpdate:
     position: int | None = None
     run_value: int | None = None
     online: bool | None = None
+    normally_oc: int | None = None
+    event_code: int | None = None
 
 
 def parse_mqtt_message(
@@ -97,7 +101,7 @@ def parse_mqtt_message(
     if not isinstance(data, dict):
         return None
     method = data.get("method")
-    if method is not None and method != "properties_changed":
+    if method is not None and method not in ("properties_changed", "event_report"):
         return None
 
     params = data.get("params")
@@ -107,6 +111,8 @@ def parse_mqtt_message(
     position: int | None = None
     run_value: int | None = None
     online: bool | None = None
+    normally_oc: int | None = None
+    event_code: int | None = None
     for param in params:
         if not isinstance(param, dict):
             continue
@@ -123,14 +129,26 @@ def parse_mqtt_message(
             run_value = value
         elif dpid == DPID_ONLINE:
             online = value == 1
+        elif dpid == DPID_NORMALLY_OC:
+            normally_oc = value
+        elif dpid == DPID_EVENT:
+            event_code = value
 
-    if position is None and run_value is None and online is None:
+    if (
+        position is None
+        and run_value is None
+        and online is None
+        and normally_oc is None
+        and event_code is None
+    ):
         return None
     return EveccaMqttUpdate(
         device_id,
         position=position,
         run_value=run_value,
         online=online,
+        normally_oc=normally_oc,
+        event_code=event_code,
     )
 
 

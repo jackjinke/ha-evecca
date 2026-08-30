@@ -58,6 +58,21 @@
     }
   },
   "entity": {
+    "button": {
+      "recalibrate_travel": {
+        "name": "重新学习行程"
+      }
+    },
+    "select": {
+      "controller_function": {
+        "name": "功能",
+        "state": {
+          "default": "默认",
+          "normally_open": "常开",
+          "normally_closed": "常闭"
+        }
+      }
+    },
     "sensor": {
       "window_mode": {
         "name": "窗户模式",
