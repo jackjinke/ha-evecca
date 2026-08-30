@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -190,6 +190,16 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         )
 
     def handle_mqtt_update(self, update: EveccaMqttUpdate) -> None:
+        """Schedule one pushed MQTT update on Home Assistant's event loop."""
+        try:
+            self.hass.loop.call_soon_threadsafe(self._handle_mqtt_update, update)
+        except RuntimeError:
+            _LOGGER.debug(
+                "Ignoring EVECCA MQTT update while Home Assistant is stopping"
+            )
+
+    @callback
+    def _handle_mqtt_update(self, update: EveccaMqttUpdate) -> None:
         """Apply one pushed MQTT update."""
         if self.data is None or update.device_id not in self.data.devices:
             return
