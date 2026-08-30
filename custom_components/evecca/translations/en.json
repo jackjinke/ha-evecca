@@ -56,5 +56,17 @@
       "unknown": "Unexpected error",
       "wrong_account": "The login belongs to a different EVECCA account"
     }
+  },
+  "entity": {
+    "sensor": {
+      "window_mode": {
+        "name": "Window mode",
+        "state": {
+          "closed": "Closed",
+          "open": "Open",
+          "tilt_open": "Tilt open"
+        }
+      }
+    }
   }
 }

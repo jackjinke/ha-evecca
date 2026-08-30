@@ -56,5 +56,17 @@
       "unknown": "发生未知错误",
       "wrong_account": "登录账号与当前配置不一致"
     }
+  },
+  "entity": {
+    "sensor": {
+      "window_mode": {
+        "name": "窗户模式",
+        "state": {
+          "closed": "关闭",
+          "open": "打开",
+          "tilt_open": "悬开"
+        }
+      }
+    }
   }
 }

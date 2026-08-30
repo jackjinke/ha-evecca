@@ -3,6 +3,7 @@
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import EveccaApi, EveccaApiError, EveccaAuthError, EveccaConnectionError
@@ -16,13 +17,15 @@ from .const import (
     CONF_MQTT_USERNAME,
     CONF_TOKEN,
     CONF_USER_ID,
+    MODEL_CONTROLLER_PREFIX,
 )
 from .coordinator import EveccaCoordinator
+from .device_info import evecca_device_info
 from .models import EveccaMqttConfig, EveccaSession
 from .mqtt import EveccaMqttClient
 from .runtime import EveccaConfigEntry, EveccaRuntimeData
 
-PLATFORMS = [Platform.COVER]
+PLATFORMS = [Platform.COVER, Platform.LOCK, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: EveccaConfigEntry) -> bool:
@@ -41,6 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: EveccaConfigEntry) -> bo
     entry.runtime_data = EveccaRuntimeData(coordinator=coordinator, mqtt=mqtt)
 
     await coordinator.async_config_entry_first_refresh()
+    _register_controller_devices(hass, entry, coordinator)
     entry.async_create_background_task(hass, mqtt.run(), name="evecca-mqtt")
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -50,6 +54,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: EveccaConfigEntry) -> bo
 async def async_unload_entry(hass: HomeAssistant, entry: EveccaConfigEntry) -> bool:
     """Unload an EVECCA config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+def _register_controller_devices(
+    hass: HomeAssistant,
+    entry: EveccaConfigEntry,
+    coordinator: EveccaCoordinator,
+) -> None:
+    """Create parent registry entries for controllers without entities."""
+    device_registry = dr.async_get(hass)
+    for device in coordinator.data.devices.values():
+        if device.model.startswith(MODEL_CONTROLLER_PREFIX):
+            device_registry.async_get_or_create(
+                config_entry_id=entry.entry_id,
+                **evecca_device_info(device),
+            )
 
 
 async def _async_refresh_session(
