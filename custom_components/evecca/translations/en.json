@@ -5,7 +5,16 @@
         "title": "Connect to EVECCA",
         "menu_options": {
           "password": "Password",
-          "sms": "SMS code"
+          "sms": "SMS code",
+          "session": "Import app session"
+        }
+      },
+      "session": {
+        "title": "Import EVECCA app session",
+        "description": "Capture traffic from the signed-in EVECCA app, reopen it, and find the /tokenLogin request. Paste the complete Authorization header value and the hwId from the request body below. No password or SMS code is needed. Keep these credentials private; capture and import them again if they expire.",
+        "data": {
+          "authorization": "Authorization",
+          "hw_id": "hwId"
         }
       },
       "password": {
@@ -37,19 +46,23 @@
         "title": "Reauthenticate EVECCA",
         "menu_options": {
           "password": "Password",
-          "sms": "SMS code"
+          "sms": "SMS code",
+          "session": "Import app session"
         }
       }
     },
     "error": {
       "cannot_connect": "Cannot connect to EVECCA",
       "invalid_auth": "Invalid authentication",
+      "invalid_authorization": "Enter the complete Authorization value containing token and userId",
+      "invalid_hw_id": "Enter the hwId from the app request",
       "invalid_code": "The verification code must contain digits only",
       "unknown": "Unexpected error"
     },
     "abort": {
       "already_configured": "This EVECCA account is already configured",
       "cannot_connect": "Cannot connect to EVECCA",
+      "invalid_auth": "The session has expired; authenticate again or import a fresh capture",
       "family_not_found": "The configured home no longer exists",
       "no_families": "No EVECCA homes were found",
       "reauth_successful": "Authentication updated",

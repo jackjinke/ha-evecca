@@ -5,7 +5,16 @@
         "title": "连接易慧家",
         "menu_options": {
           "password": "密码登录",
-          "sms": "短信验证码登录"
+          "sms": "短信验证码登录",
+          "session": "导入 App 会话"
+        }
+      },
+      "session": {
+        "title": "导入易慧家 App 会话",
+        "description": "对已登录的易慧家 App 抓包，重新打开 App，找到 /tokenLogin 请求。复制请求头 Authorization 的完整值和请求体中的 hwId 填入下方，无需重新输入密码或验证码。请勿分享这些凭据；失效后需重新抓包导入。",
+        "data": {
+          "authorization": "Authorization",
+          "hw_id": "hwId"
         }
       },
       "password": {
@@ -37,19 +46,23 @@
         "title": "重新认证易慧家",
         "menu_options": {
           "password": "密码登录",
-          "sms": "短信验证码登录"
+          "sms": "短信验证码登录",
+          "session": "导入 App 会话"
         }
       }
     },
     "error": {
       "cannot_connect": "无法连接易慧家服务",
       "invalid_auth": "认证失败",
+      "invalid_authorization": "请填写包含 token 和 userId 的完整 Authorization 值",
+      "invalid_hw_id": "请填写 App 请求中的 hwId",
       "invalid_code": "验证码只能包含数字",
       "unknown": "发生未知错误"
     },
     "abort": {
       "already_configured": "该易慧家账号已经配置",
       "cannot_connect": "无法连接易慧家服务",
+      "invalid_auth": "会话已失效，请重新认证或抓包导入",
       "family_not_found": "已配置的家庭不存在",
       "no_families": "未找到易慧家家庭",
       "reauth_successful": "认证信息已更新",

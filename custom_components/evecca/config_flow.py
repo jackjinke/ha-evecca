@@ -1,5 +1,7 @@
 """Config flow for EVECCA."""
 
+import base64
+import json
 import logging
 import uuid
 from collections.abc import Mapping
@@ -67,7 +69,7 @@ class EveccaConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_menu(
             step_id="user",
-            menu_options=["password", "sms"],
+            menu_options=["password", "sms", "session"],
         )
 
     async def async_step_password(
@@ -162,6 +164,71 @@ class EveccaConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_session(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Import an existing app session without a password or SMS login."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                authorization = json.loads(
+                    base64.b64decode(user_input["authorization"].strip(), validate=True)
+                )
+            except ValueError:
+                errors["authorization"] = "invalid_authorization"
+            else:
+                token = (
+                    authorization.get("token")
+                    if isinstance(authorization, dict)
+                    else None
+                )
+                user_id = (
+                    authorization.get("userId")
+                    if isinstance(authorization, dict)
+                    else None
+                )
+                if (
+                    not isinstance(token, str)
+                    or not token.strip()
+                    or type(user_id) is not int
+                    or user_id <= 0
+                ):
+                    errors["authorization"] = "invalid_authorization"
+
+            hw_id = user_input[CONF_HW_ID].strip()
+            if not hw_id:
+                errors[CONF_HW_ID] = "invalid_hw_id"
+
+            if not errors:
+                try:
+                    self._session = await self._api().async_token_login(
+                        token, user_id, hw_id
+                    )
+                except EveccaAuthError:
+                    errors["base"] = "invalid_auth"
+                except EveccaConnectionError:
+                    errors["base"] = "cannot_connect"
+                except EveccaApiError:
+                    _LOGGER.exception("Unexpected EVECCA session import failure")
+                    errors["base"] = "unknown"
+                else:
+                    self._hw_id = hw_id
+                    self._username = ""
+                    return await self._async_after_login()
+
+        return self.async_show_form(
+            step_id="session",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("authorization"): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                    vol.Required(CONF_HW_ID): str,
+                }
+            ),
+            errors=errors,
+        )
+
     async def async_step_family(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -210,7 +277,7 @@ class EveccaConfigFlow(ConfigFlow, domain=DOMAIN):
         """Ask how to reauthenticate."""
         return self.async_show_menu(
             step_id="reauth_confirm",
-            menu_options=["password", "sms"],
+            menu_options=["password", "sms", "session"],
         )
 
     async def _async_after_login(self) -> ConfigFlowResult:
@@ -221,11 +288,7 @@ class EveccaConfigFlow(ConfigFlow, domain=DOMAIN):
         try:
             families = await self._api().async_families(self._session)
         except EveccaAuthError:
-            return self.async_show_form(
-                step_id="password",
-                data_schema=_password_schema(self._username),
-                errors={"base": "invalid_auth"},
-            )
+            return self.async_abort(reason="invalid_auth")
         except (EveccaApiError, EveccaConnectionError):
             _LOGGER.exception("Cannot load EVECCA families")
             return self.async_abort(reason="cannot_connect")
