@@ -39,36 +39,83 @@ class EveccaMqttClient:
         self._family_id = family_id
         self._client_id = client_id
         self._on_update = on_update
+        self._config_changed = asyncio.Event()
+
+    def update_config(self, config: EveccaMqttConfig) -> None:
+        """Replace credentials on the HA event loop and wake the running listener."""
+        if config == self._config:
+            return
+        self._config = config
+        self._config_changed.set()
 
     async def run(self) -> None:
         """Reconnect and forward MQTT messages until cancelled."""
+        while True:
+            # Snapshot and clear without yielding, so renewals cannot lose their wakeup.
+            self._config_changed.clear()
+            connection = asyncio.create_task(self._run_connection(self._config))
+            changed = asyncio.create_task(self._config_changed.wait())
+            try:
+                await asyncio.wait(
+                    (connection, changed), return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                await _cancel_and_wait(connection, changed)
+
+            if connection.cancelled():
+                continue
+            try:
+                connection.result()
+            except aiomqtt.MqttError as err:
+                _LOGGER.debug("EVECCA MQTT connection lost: %s", err)
+                try:
+                    async with asyncio.timeout(_RECONNECT_DELAY):
+                        await self._config_changed.wait()
+                except TimeoutError:
+                    pass
+
+    async def _run_connection(self, config: EveccaMqttConfig) -> None:
+        """Open one subscription using the credentials for this attempt."""
         client = aiomqtt.Client(
-            hostname=self._config.host,
-            port=self._config.port,
-            username=self._config.username,
-            password=self._config.password,
+            hostname=config.host,
+            port=config.port,
+            username=config.username,
+            password=config.password,
             tls_params=aiomqtt.TLSParameters(),
             identifier=self._client_id,
             clean_session=False,
             keepalive=MQTT_KEEPALIVE,
         )
-        while True:
-            try:
-                async with client:
-                    await client.subscribe(f"{self._family_id}/#")
-                    async for message in client.messages:
-                        update = parse_mqtt_message(
-                            message.topic.value,
-                            message.payload,
-                            self._family_id,
-                        )
-                        if update is not None:
-                            self._on_update(update)
-            except asyncio.CancelledError:
-                raise
-            except aiomqtt.MqttError as err:
-                _LOGGER.debug("EVECCA MQTT connection lost: %s", err)
-                await asyncio.sleep(_RECONNECT_DELAY)
+        # aiomqtt does not clean up a partially opened connection if entry is cancelled.
+        try:
+            await client.__aenter__()
+            await client.subscribe(f"{self._family_id}/#")
+            async for message in client.messages:
+                update = parse_mqtt_message(
+                    message.topic.value,
+                    message.payload,
+                    self._family_id,
+                )
+                if update is not None:
+                    self._on_update(update)
+        finally:
+            await client.__aexit__(None, None, None)
+
+
+async def _cancel_and_wait(*tasks: asyncio.Task[Any]) -> None:
+    """Join cancelled work without letting repeated cancellation abort disconnect."""
+    for task in tasks:
+        if not task.done() and not task.cancelling():
+            task.cancel()
+    joined = asyncio.gather(*tasks, return_exceptions=True)
+    cancelled = False
+    while not joined.done():
+        try:
+            await asyncio.shield(joined)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 @dataclass(frozen=True, slots=True)

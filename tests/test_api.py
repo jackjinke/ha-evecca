@@ -175,7 +175,7 @@ def test_set_property_uses_captured_endpoint() -> None:
 
 
 def test_token_failure_maps_to_auth_error() -> None:
-    """Expired tokens trigger Home Assistant reauthentication."""
+    """Rejected tokens are reported to the session renewal layer."""
     with pytest.raises(EveccaAuthError):
         EveccaApi._result({"success": False, "code": 99, "msg": "Token失效"})
 

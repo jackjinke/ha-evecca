@@ -32,9 +32,10 @@ from .const import (
     WINDOW_MODE_OPEN,
 )
 from .device_info import device_display_name
-from .models import EveccaDevice, EveccaSession
+from .models import EveccaDevice
 from .mqtt import EveccaMqttUpdate
 from .runtime import EveccaConfigEntry
+from .session import EveccaSessionManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         hass: HomeAssistant,
         config_entry: EveccaConfigEntry,
         api: EveccaApi,
-        session: EveccaSession,
+        session: EveccaSessionManager,
         family_id: int,
     ) -> None:
         """Initialize the coordinator."""
@@ -104,7 +105,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
                 }
 
         try:
-            catalog = await self.api.async_error_codes(self.session)
+            catalog = await self.session.async_call(self.api.async_error_codes)
         except (EveccaApiError, EveccaAuthError, EveccaConnectionError) as err:
             _LOGGER.debug("Cannot refresh EVECCA error catalog: %s", err)
             return
@@ -124,9 +125,11 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
     async def _async_update_data(self) -> EveccaData:
         """Fetch a full device snapshot from EVECCA."""
         try:
-            devices = await self.api.async_devices(self.session, self.family_id)
+            devices = await self.session.async_call(
+                self.api.async_devices, self.family_id
+            )
         except EveccaAuthError as err:
-            raise ConfigEntryAuthFailed("EVECCA token expired") from err
+            raise ConfigEntryAuthFailed("EVECCA session renewal rejected") from err
         except (EveccaApiError, EveccaConnectionError) as err:
             raise UpdateFailed(f"Cannot update EVECCA devices: {err}") from err
 
@@ -154,8 +157,8 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         device = self._device(device_id)
         action = self._action_label(dpid, value)
         try:
-            await self.api.async_action(
-                self.session,
+            await self.session.async_call(
+                self.api.async_action,
                 self.family_id,
                 device_id,
                 value,
@@ -183,8 +186,8 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             raise HomeAssistantError("Unsupported EVECCA controller function")
         label = f"设置为{CONTROLLER_FUNCTION_LABELS[function]}"
         try:
-            await self.api.async_set_property(
-                self.session,
+            await self.session.async_call(
+                self.api.async_set_property,
                 self.family_id,
                 device_id,
                 CONTROLLER_FUNCTION_VALUES[function],
