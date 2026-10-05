@@ -116,9 +116,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         await self._error_store.async_save(
             {
                 "version": catalog.version,
-                "codes": {
-                    str(code): text for code, text in catalog.codes.items()
-                },
+                "codes": {str(code): text for code, text in catalog.codes.items()},
             }
         )
 
@@ -153,7 +151,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         *,
         dpid: int,
     ) -> None:
-        """Send a command, notify its API result, and refresh state."""
+        """Send a command, report failures, and refresh state."""
         device = self._device(device_id)
         action = self._action_label(dpid, value)
         try:
@@ -172,7 +170,6 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             self._notify_command(device, action, str(err))
             raise HomeAssistantError(f"EVECCA command failed: {err}") from err
 
-        self._notify_command(device, action)
         await self.async_request_refresh()
 
     async def async_set_controller_function(
@@ -204,7 +201,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         current = self._device(device_id)
         if current is not None:
             self._set_device(replace(current, controller_function=function))
-        self._notify_command(device, label)
+
         await self.async_request_refresh()
 
     def set_window_target(
@@ -452,10 +449,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             position is not None
             and position_actual
             and device.position is not None
-            and (
-                device.position == position
-                or device.position != previous_position
-            )
+            and (device.position == position or device.position != previous_position)
         ):
             position = None
             previous_position = None
@@ -521,19 +515,14 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         self,
         device: EveccaDevice | None,
         action: str,
-        error: str | None = None,
+        error: str,
     ) -> None:
-        """Notify that a cloud command was accepted or rejected."""
+        """Notify only when a cloud command was rejected."""
         if device is None:
             return
-        message = (
-            f"{action}失败: {error}"
-            if error is not None
-            else f"{action}命令已发送。"
-        )
         persistent_notification.async_create(
             self.hass,
-            message,
+            f"{action}失败: {error}",
             title=f"EVECCA · {device_display_name(device)}",
             notification_id=f"evecca_command_{device.device_id}",
         )
