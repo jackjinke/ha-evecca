@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
+from time import monotonic
 from typing import Any
 
 from homeassistant.components import persistent_notification
@@ -27,6 +28,7 @@ from .const import (
     MODEL_LOCK_PREFIX,
     MODEL_WINDOW_PREFIX,
     OPTIMISTIC_TIMEOUT,
+    PUSH_PRECEDENCE,
     RUN_WINDOW_GEAR_SWITCH,
     RUN_WINDOW_MOVING,
     RUN_WINDOW_STOPPED,
@@ -80,6 +82,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
         )
         self._targets: dict[int, CommandTarget] = {}
         self._target_timers: dict[int, Callable[[], None]] = {}
+        self._window_pushed_at: dict[int, float] = {}
         config_entry.async_on_unload(self._cancel_all_timers)
 
     async def async_load_error_codes(self) -> None:
@@ -112,6 +115,7 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
 
     async def _async_update_data(self) -> EveccaData:
         """Fetch a full device snapshot from EVECCA."""
+        fetched_at = monotonic()
         try:
             devices = await self.session.async_call(
                 self.api.async_devices, self.family_id
@@ -131,7 +135,14 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
                     device.position,
                     device.run_value,
                 )
-            current = self._merge_snapshot(device, previous.get(device.device_id))
+            pushed_at = self._window_pushed_at.get(device.device_id)
+            current = self._merge_snapshot(
+                device,
+                previous.get(device.device_id),
+                recent_push=(
+                    pushed_at is not None and fetched_at - pushed_at < PUSH_PRECEDENCE
+                ),
+            )
             self._confirm_target(current, pushed=False)
             merged[device.device_id] = current
         for device_id, device in previous.items():
@@ -266,8 +277,15 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             online=update.online if update.online is not None else device.online,
         )
         if device.model.startswith(MODEL_WINDOW_PREFIX):
+            if update.position is not None or update.run_value in (
+                RUN_WINDOW_MOVING,
+                RUN_WINDOW_GEAR_SWITCH,
+                RUN_WINDOW_STOPPED,
+            ):
+                self._window_pushed_at[device.device_id] = monotonic()
             if update.run_value in (RUN_WINDOW_MOVING, RUN_WINDOW_GEAR_SWITCH):
-                updated = replace(updated, moving=True)
+                # The previous mode stops being true as soon as the sash moves.
+                updated = replace(updated, moving=True, window_mode=None)
             elif update.run_value == RUN_WINDOW_STOPPED:
                 updated = replace(updated, moving=False)
         elif device.model.startswith(MODEL_LOCK_PREFIX):
@@ -303,18 +321,29 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
     def _merge_snapshot(
         device: EveccaDevice,
         previous: EveccaDevice | None,
+        *,
+        recent_push: bool,
     ) -> EveccaDevice:
         """Fill fields a snapshot omits from the previously reported state."""
         if previous is None:
             return device
         merged = replace(device, online=previous.online)
         if device.model.startswith(MODEL_WINDOW_PREFIX):
-            # Snapshots carry no motion or mode; an unmoved window keeps both.
-            unmoved = device.position == previous.position
+            if recent_push:
+                # The snapshot may predate that push, so it cannot move the window.
+                return replace(
+                    merged,
+                    position=previous.position,
+                    run_value=previous.run_value,
+                    moving=previous.moving,
+                    window_mode=previous.window_mode,
+                )
+            # Snapshots carry no motion; mid-move positions imply no mode.
+            keep_mode = previous.moving or device.position == previous.position
             return replace(
                 merged,
                 moving=previous.moving,
-                window_mode=previous.window_mode if unmoved else device.window_mode,
+                window_mode=previous.window_mode if keep_mode else device.window_mode,
             )
         if device.model.startswith(MODEL_LOCK_PREFIX) and device.locked is None:
             return replace(merged, locked=previous.locked)

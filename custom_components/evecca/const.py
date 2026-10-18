@@ -99,3 +99,6 @@ SCAN_INTERVAL = timedelta(minutes=5)
 MQTT_KEEPALIVE = 60
 REQUEST_TIMEOUT = 20
 OPTIMISTIC_TIMEOUT = 90
+# Device-list snapshots lagged MQTT by up to ~25 s in testing, so a window
+# push within this many seconds outranks the snapshot's position.
+PUSH_PRECEDENCE = 60
