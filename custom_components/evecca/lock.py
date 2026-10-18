@@ -55,8 +55,20 @@ class EveccaLock(CoordinatorEntity[EveccaCoordinator], LockEntity):
 
     @property
     def is_locked(self) -> bool | None:
-        """Return whether the lock is locked."""
+        """Return the reported lock state."""
         return self.device.locked
+
+    @property
+    def is_locking(self) -> bool:
+        """Return whether a lock command awaits confirmation."""
+        target = self.coordinator.target(self.device_id)
+        return target is not None and target.locked is True
+
+    @property
+    def is_unlocking(self) -> bool:
+        """Return whether an unlock command awaits confirmation."""
+        target = self.coordinator.target(self.device_id)
+        return target is not None and target.locked is False
 
     async def async_lock(self, **kwargs: Any) -> None:
         """Lock the window lock."""
@@ -67,8 +79,8 @@ class EveccaLock(CoordinatorEntity[EveccaCoordinator], LockEntity):
         await self._async_set_locked(False)
 
     async def _async_set_locked(self, locked: bool) -> None:
-        """Send a lock command with an optimistic target."""
-        self.coordinator.set_lock_target(self.device_id, locked)
+        """Send a lock command and wait for telemetry to confirm it."""
+        self.coordinator.set_target(self.device_id, locked=locked)
         try:
             await self.coordinator.async_action(
                 self.device_id,

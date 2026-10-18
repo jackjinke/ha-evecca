@@ -29,7 +29,7 @@ async def async_setup_entry(
 
 
 class EveccaWindowModeSensor(CoordinatorEntity[EveccaCoordinator], RestoreSensor):
-    """Expose the confirmed or optimistic window mode."""
+    """Expose the reported window mode."""
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_has_entity_name = True

@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components import persistent_notification
@@ -26,41 +27,30 @@ from .const import (
     MODEL_LOCK_PREFIX,
     MODEL_WINDOW_PREFIX,
     OPTIMISTIC_TIMEOUT,
+    RUN_WINDOW_GEAR_SWITCH,
+    RUN_WINDOW_MOVING,
+    RUN_WINDOW_STOPPED,
     SCAN_INTERVAL,
-    WINDOW_MODE_BY_RUN_VALUE,
-    WINDOW_MODE_CLOSED,
-    WINDOW_MODE_OPEN,
 )
 from .device_info import device_display_name
 from .models import EveccaDevice
 from .mqtt import EveccaMqttUpdate
 from .runtime import EveccaConfigEntry
 from .session import EveccaSessionManager
+from .targets import CommandTarget, observe, stopped_window_mode, target_reached
 
 _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
 class EveccaData:
-    """Current EVECCA integration data."""
+    """Device telemetry as last reported by EVECCA; never optimistic."""
 
     devices: dict[int, EveccaDevice]
 
 
-@dataclass(frozen=True, slots=True)
-class PendingState:
-    """Optimistic target state waiting for device confirmation."""
-
-    previous_position: int | None = None
-    position: int | None = None
-    previous_window_mode: str | None = None
-    window_mode: str | None = None
-    previous_locked: bool | None = None
-    locked: bool | None = None
-
-
 class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
-    """Coordinate HTTPS reconciliation, MQTT updates, and optimistic targets."""
+    """Merge HTTPS snapshots and MQTT pushes, and track command targets."""
 
     def __init__(
         self,
@@ -88,9 +78,9 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             1,
             f"{DOMAIN}_{config_entry.entry_id}_error_codes",
         )
-        self._pending: dict[int, PendingState] = {}
-        self._pending_cancels: dict[int, Callable[[], None]] = {}
-        config_entry.async_on_unload(self._cancel_all_pending)
+        self._targets: dict[int, CommandTarget] = {}
+        self._target_timers: dict[int, Callable[[], None]] = {}
+        config_entry.async_on_unload(self._cancel_all_timers)
 
     async def async_load_error_codes(self) -> None:
         """Load cached error texts, then refresh them like the official app."""
@@ -132,13 +122,18 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             raise UpdateFailed(f"Cannot update EVECCA devices: {err}") from err
 
         previous = self.data.devices if self.data is not None else {}
-        merged = {
-            device.device_id: self._merge_https_device(
-                device,
-                previous.get(device.device_id),
-            )
-            for device in devices
-        }
+        merged: dict[int, EveccaDevice] = {}
+        for device in devices:
+            if device.model.startswith(MODEL_WINDOW_PREFIX):
+                _LOGGER.debug(
+                    "EVECCA snapshot %s: position=%s run_value=%s",
+                    device.device_id,
+                    device.position,
+                    device.run_value,
+                )
+            current = self._merge_snapshot(device, previous.get(device.device_id))
+            self._confirm_target(current, pushed=False)
+            merged[device.device_id] = current
         for device_id, device in previous.items():
             if device_id not in merged:
                 merged[device_id] = replace(device, is_ready=False, online=False)
@@ -204,76 +199,44 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
 
         await self.async_request_refresh()
 
-    def set_window_target(
+    def target(self, device_id: int) -> CommandTarget | None:
+        """Return the command target still awaiting confirmation."""
+        return self._targets.get(device_id)
+
+    @callback
+    def set_target(
         self,
         device_id: int,
         *,
         position: int | None = None,
-        window_mode: str | None = None,
+        tilt: bool = False,
+        locked: bool | None = None,
     ) -> None:
-        """Display a window command target until the device confirms it."""
+        """Mark a command as in progress until telemetry confirms it."""
         device = self._device(device_id)
         if device is None:
             return
-        existing = self._pending.get(device_id)
-        previous_position = device.position
-        previous_window_mode = device.window_mode
-        if existing is not None:
-            if existing.position is not None:
-                previous_position = existing.previous_position
-            if existing.window_mode is not None:
-                previous_window_mode = existing.previous_window_mode
-        pending = PendingState(
-            previous_position=previous_position,
-            position=position,
-            previous_window_mode=previous_window_mode,
-            window_mode=window_mode,
-        )
-        self._set_pending(device_id, pending)
-
-    def set_lock_target(self, device_id: int, locked: bool) -> None:
-        """Display a lock command target until the device confirms it."""
-        device = self._device(device_id)
-        if device is None:
-            return
-        existing = self._pending.get(device_id)
-        previous_locked = device.locked
-        if existing is not None and existing.locked is not None:
-            previous_locked = existing.previous_locked
-        self._set_pending(
-            device_id,
-            PendingState(previous_locked=previous_locked, locked=locked),
+        self._cancel_timer(device_id)
+        self._targets[device_id] = CommandTarget(
+            baseline=device, position=position, tilt=tilt, locked=locked
         )
 
+        @callback
+        def _expire(_now: datetime) -> None:
+            self._target_timers.pop(device_id, None)
+            self.clear_target(device_id)
+
+        self._target_timers[device_id] = async_call_later(
+            self.hass, OPTIMISTIC_TIMEOUT, _expire
+        )
+        self.async_update_listeners()
+
+    @callback
     def clear_target(self, device_id: int) -> None:
-        """Discard an optimistic target and restore the last confirmed state."""
-        pending = self._pending.pop(device_id, None)
-        self._cancel_pending(device_id)
-        if pending is None or self.data is None:
-            return
-        device = self.data.devices.get(device_id)
-        if device is None:
-            return
-        self._set_device(
-            replace(
-                device,
-                position=(
-                    pending.previous_position
-                    if pending.position is not None
-                    else device.position
-                ),
-                window_mode=(
-                    pending.previous_window_mode
-                    if pending.window_mode is not None
-                    else device.window_mode
-                ),
-                locked=(
-                    pending.previous_locked
-                    if pending.locked is not None
-                    else device.locked
-                ),
-            )
-        )
+        """Stop waiting for a command target."""
+        self._cancel_timer(device_id)
+        if self._targets.pop(device_id, None) is not None:
+            self.async_update_listeners()
 
     def handle_mqtt_update(self, update: EveccaMqttUpdate) -> None:
         """Schedule one pushed MQTT update on Home Assistant's event loop."""
@@ -287,28 +250,10 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
     @callback
     def _handle_mqtt_update(self, update: EveccaMqttUpdate) -> None:
         """Apply one pushed MQTT update."""
-        if self.data is None or update.device_id not in self.data.devices:
+        _LOGGER.debug("EVECCA MQTT update: %s", update)
+        device = self._device(update.device_id)
+        if device is None:
             return
-
-        device = self.data.devices[update.device_id]
-        window_mode = device.window_mode
-        locked = device.locked
-        controller_function = device.controller_function
-        if device.model.startswith(MODEL_WINDOW_PREFIX):
-            window_mode = WINDOW_MODE_BY_RUN_VALUE.get(
-                update.run_value,
-                device.window_mode,
-            )
-        elif device.model.startswith(MODEL_LOCK_PREFIX):
-            locked = LOCK_STATE_BY_RUN_VALUE.get(update.run_value, device.locked)
-        elif (
-            device.model.startswith(MODEL_CONTROLLER_PREFIX)
-            and update.normally_oc is not None
-        ):
-            controller_function = CONTROLLER_FUNCTION_BY_VALUE.get(
-                update.normally_oc,
-                device.controller_function,
-            )
 
         updated = replace(
             device,
@@ -318,190 +263,83 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             run_value=(
                 update.run_value if update.run_value is not None else device.run_value
             ),
-            window_mode=window_mode,
-            locked=locked,
-            controller_function=controller_function,
             online=update.online if update.online is not None else device.online,
         )
-        self._set_actual_device(
-            updated,
-            position_actual=update.position is not None,
-            window_mode_actual=(
-                device.model.startswith(MODEL_WINDOW_PREFIX)
-                and update.run_value in WINDOW_MODE_BY_RUN_VALUE
-            ),
-            locked_actual=(
-                device.model.startswith(MODEL_LOCK_PREFIX)
-                and update.run_value in LOCK_STATE_BY_RUN_VALUE
-            ),
-        )
+        if device.model.startswith(MODEL_WINDOW_PREFIX):
+            if update.run_value in (RUN_WINDOW_MOVING, RUN_WINDOW_GEAR_SWITCH):
+                updated = replace(updated, moving=True)
+            elif update.run_value == RUN_WINDOW_STOPPED:
+                updated = replace(updated, moving=False)
+        elif device.model.startswith(MODEL_LOCK_PREFIX):
+            updated = replace(
+                updated,
+                locked=LOCK_STATE_BY_RUN_VALUE.get(update.run_value, device.locked),
+            )
+        elif (
+            device.model.startswith(MODEL_CONTROLLER_PREFIX)
+            and update.normally_oc is not None
+        ):
+            updated = replace(
+                updated,
+                controller_function=CONTROLLER_FUNCTION_BY_VALUE.get(
+                    update.normally_oc, device.controller_function
+                ),
+            )
+
+        completed = self._confirm_target(updated, pushed=True)
+        if (
+            device.model.startswith(MODEL_WINDOW_PREFIX)
+            and update.run_value == RUN_WINDOW_STOPPED
+        ):
+            updated = replace(
+                updated,
+                window_mode=stopped_window_mode(updated.position, completed),
+            )
+        self._set_device(updated)
         if update.event_code is not None:
             self._notify_device_event(updated, update.event_code)
 
-    def _merge_https_device(
-        self,
+    @staticmethod
+    def _merge_snapshot(
         device: EveccaDevice,
         previous: EveccaDevice | None,
     ) -> EveccaDevice:
-        """Merge an HTTPS snapshot without losing pushed or pending state."""
-        merged = (
-            replace(device, online=previous.online) if previous is not None else device
-        )
-        pending = self._pending.get(merged.device_id)
-        if pending is not None:
-            pending = self._reconcile_pending(
+        """Fill fields a snapshot omits from the previously reported state."""
+        if previous is None:
+            return device
+        merged = replace(device, online=previous.online)
+        if device.model.startswith(MODEL_WINDOW_PREFIX):
+            # Snapshots carry no motion or mode; an unmoved window keeps both.
+            unmoved = device.position == previous.position
+            return replace(
                 merged,
-                pending,
-                position_actual=merged.position is not None and merged.position >= 0,
-                window_mode_actual=merged.window_mode is not None,
-                locked_actual=merged.locked is not None,
+                moving=previous.moving,
+                window_mode=previous.window_mode if unmoved else device.window_mode,
             )
-            if pending is None:
-                self._discard_pending(merged.device_id)
-            else:
-                self._pending[merged.device_id] = pending
-                merged = self._apply_pending(merged, pending)
-
-        if merged.model.startswith(MODEL_WINDOW_PREFIX) and merged.window_mode is None:
-            window_mode = previous.window_mode if previous is not None else None
-            if window_mode is None:
-                if merged.position == 0:
-                    window_mode = WINDOW_MODE_CLOSED
-                elif merged.position == 100:
-                    window_mode = WINDOW_MODE_OPEN
-            merged = replace(merged, window_mode=window_mode)
-        if merged.model.startswith(MODEL_LOCK_PREFIX) and merged.locked is None:
-            merged = replace(
-                merged,
-                locked=previous.locked if previous is not None else None,
-            )
+        if device.model.startswith(MODEL_LOCK_PREFIX) and device.locked is None:
+            return replace(merged, locked=previous.locked)
         if (
-            merged.model.startswith(MODEL_CONTROLLER_PREFIX)
-            and merged.controller_function is None
-            and previous is not None
+            device.model.startswith(MODEL_CONTROLLER_PREFIX)
+            and device.controller_function is None
         ):
-            merged = replace(
-                merged,
-                controller_function=previous.controller_function,
-            )
+            return replace(merged, controller_function=previous.controller_function)
         return merged
 
-    def _set_pending(self, device_id: int, pending: PendingState) -> None:
-        """Store and display an optimistic target."""
-        self._cancel_pending(device_id)
-        self._pending[device_id] = pending
-        self._pending_cancels[device_id] = async_call_later(
-            self.hass,
-            OPTIMISTIC_TIMEOUT,
-            lambda _: self._expire_pending(device_id),
-        )
-        device = self._device(device_id)
-        if device is not None:
-            self._set_device(self._apply_pending(device, pending))
-
-    def _expire_pending(self, device_id: int) -> None:
-        """Restore the last confirmed state after an optimistic timeout."""
-        self.clear_target(device_id)
-
-    def _set_actual_device(
-        self,
-        device: EveccaDevice,
-        *,
-        position_actual: bool,
-        window_mode_actual: bool,
-        locked_actual: bool,
-    ) -> None:
-        """Apply actual fields without treating optimistic values as confirmation."""
-        pending = self._pending.get(device.device_id)
-        if pending is not None:
-            pending = self._reconcile_pending(
-                device,
-                pending,
-                position_actual=position_actual,
-                window_mode_actual=window_mode_actual,
-                locked_actual=locked_actual,
-            )
-            if pending is None:
-                self._discard_pending(device.device_id)
-            else:
-                self._pending[device.device_id] = pending
-                device = self._apply_pending(device, pending)
-        self._set_device(device)
-
-    @staticmethod
-    def _reconcile_pending(
-        device: EveccaDevice,
-        pending: PendingState,
-        *,
-        position_actual: bool,
-        window_mode_actual: bool,
-        locked_actual: bool,
-    ) -> PendingState | None:
-        """Clear only targets confirmed or contradicted by actual fields."""
-        position = pending.position
-        previous_position = pending.previous_position
-        window_mode = pending.window_mode
-        previous_window_mode = pending.previous_window_mode
-        locked = pending.locked
-        previous_locked = pending.previous_locked
-
-        if (
-            position is not None
-            and position_actual
-            and device.position is not None
-            and (device.position == position or device.position != previous_position)
-        ):
-            position = None
-            previous_position = None
-        if (
-            window_mode is not None
-            and window_mode_actual
-            and device.window_mode is not None
-            and (
-                device.window_mode == window_mode
-                or device.window_mode != previous_window_mode
-            )
-        ):
-            window_mode = None
-            previous_window_mode = None
-        if (
-            locked is not None
-            and locked_actual
-            and device.locked is not None
-            and (device.locked == locked or device.locked != previous_locked)
-        ):
-            locked = None
-            previous_locked = None
-
-        if position is None and window_mode is None and locked is None:
+    def _confirm_target(
+        self, device: EveccaDevice, *, pushed: bool
+    ) -> CommandTarget | None:
+        """Drop and return the device's target once telemetry proves it."""
+        target = self._targets.get(device.device_id)
+        if target is None:
             return None
-        return PendingState(
-            previous_position=previous_position,
-            position=position,
-            previous_window_mode=previous_window_mode,
-            window_mode=window_mode,
-            previous_locked=previous_locked,
-            locked=locked,
-        )
-
-    @staticmethod
-    def _apply_pending(
-        device: EveccaDevice,
-        pending: PendingState,
-    ) -> EveccaDevice:
-        """Apply display-only optimistic fields."""
-        return replace(
-            device,
-            position=(
-                pending.position if pending.position is not None else device.position
-            ),
-            window_mode=(
-                pending.window_mode
-                if pending.window_mode is not None
-                else device.window_mode
-            ),
-            locked=pending.locked if pending.locked is not None else device.locked,
-        )
+        if pushed:
+            target = observe(target, device)
+            self._targets[device.device_id] = target
+        if not target_reached(target, device, pushed=pushed):
+            return None
+        del self._targets[device.device_id]
+        self._cancel_timer(device.device_id)
+        return target
 
     @staticmethod
     def _action_label(dpid: int, value: int) -> str:
@@ -552,19 +390,14 @@ class EveccaCoordinator(DataUpdateCoordinator[EveccaData]):
             return None
         return self.data.devices.get(device_id)
 
-    def _discard_pending(self, device_id: int) -> None:
-        """Drop an optimistic target without restoring old state."""
-        self._pending.pop(device_id, None)
-        self._cancel_pending(device_id)
-
-    def _cancel_pending(self, device_id: int) -> None:
-        """Cancel one pending-state timer."""
-        cancel = self._pending_cancels.pop(device_id, None)
+    def _cancel_timer(self, device_id: int) -> None:
+        """Cancel one target expiry timer."""
+        cancel = self._target_timers.pop(device_id, None)
         if cancel is not None:
             cancel()
 
-    def _cancel_all_pending(self) -> None:
-        """Cancel all pending-state timers during unload."""
-        for cancel in self._pending_cancels.values():
+    def _cancel_all_timers(self) -> None:
+        """Cancel all target expiry timers during unload."""
+        for cancel in self._target_timers.values():
             cancel()
-        self._pending_cancels.clear()
+        self._target_timers.clear()

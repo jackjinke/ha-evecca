@@ -13,6 +13,8 @@
 
 支持在 Home Assistant 中控制易慧家窗户。
 
+窗户状态只来自设备上报：发出指令后，实体显示 opening/closing，直到 MQTT 上报到位（最长 90 秒）。设备不上报平开/悬开模式；集成在悬开指令后看到“0% 换挡停顿”再“停止在 0% 以上”时才确认悬开。`confirmed_position`、`confirmed_window_mode` 与 `optimistic` 属性供安全自动化判断是否已确认到位。
+
 ## 通过 HACS 安装
 
 1. 打开 Home Assistant 中的 **HACS**。

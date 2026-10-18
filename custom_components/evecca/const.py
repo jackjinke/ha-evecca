@@ -47,18 +47,17 @@ WINDOW_MODE_CLOSED = "closed"
 WINDOW_MODE_OPEN = "open"
 WINDOW_MODE_TILT_OPEN = "tilt_open"
 WINDOW_MODES = (WINDOW_MODE_CLOSED, WINDOW_MODE_OPEN, WINDOW_MODE_TILT_OPEN)
+# Fully open windows settle at 97-99% on some actuators.
+WINDOW_OPEN_MIN_POSITION = 95
 
-RUN_WINDOW_CLOSED = 4
-RUN_WINDOW_OPEN = 6
-RUN_WINDOW_TILT_OPEN = 17
+# Window runValue as observed over MQTT. The device never reports casement vs
+# tilt; HTTPS device lists carry an unrelated runValue.
+RUN_WINDOW_MOVING = 4
+RUN_WINDOW_GEAR_SWITCH = 6  # paused at 0% while switching casement/tilt
+RUN_WINDOW_STOPPED = 9
 RUN_LOCK_UNLOCKED = 18
 RUN_LOCK_LOCKED = 19
 
-WINDOW_MODE_BY_RUN_VALUE = {
-    RUN_WINDOW_CLOSED: WINDOW_MODE_CLOSED,
-    RUN_WINDOW_OPEN: WINDOW_MODE_OPEN,
-    RUN_WINDOW_TILT_OPEN: WINDOW_MODE_TILT_OPEN,
-}
 LOCK_STATE_BY_RUN_VALUE = {
     RUN_LOCK_UNLOCKED: False,
     RUN_LOCK_LOCKED: True,

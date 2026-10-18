@@ -11,7 +11,9 @@ from .const import (
     MODEL_CONTROLLER_PREFIX,
     MODEL_LOCK_PREFIX,
     MODEL_WINDOW_PREFIX,
-    WINDOW_MODE_BY_RUN_VALUE,
+    WINDOW_MODE_CLOSED,
+    WINDOW_MODE_OPEN,
+    WINDOW_OPEN_MIN_POSITION,
 )
 
 
@@ -119,6 +121,7 @@ class EveccaDevice:
     actions: MappingProxyType[str, int]
     position_min: int
     position_max: int
+    moving: bool = False
 
     @classmethod
     def from_api(cls, data: dict[str, Any], room_name: str | None = None) -> Self:
@@ -146,7 +149,10 @@ class EveccaDevice:
         run_value = _optional_int(data.get("runValue"))
         window_mode = None
         if model.startswith(MODEL_WINDOW_PREFIX):
-            window_mode = WINDOW_MODE_BY_RUN_VALUE.get(run_value)
+            if position == 0:
+                window_mode = WINDOW_MODE_CLOSED
+            elif position is not None and position >= WINDOW_OPEN_MIN_POSITION:
+                window_mode = WINDOW_MODE_OPEN
 
         locked = None
         if model.startswith(MODEL_LOCK_PREFIX):

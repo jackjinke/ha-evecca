@@ -84,7 +84,7 @@ class EveccaCover(CoordinatorEntity[EveccaCoordinator], CoverEntity):
 
     @property
     def current_cover_position(self) -> int | None:
-        """Return current position, where 0 is closed and 100 is open."""
+        """Return reported position, where 0 is closed and 100 is open."""
         position = self.device.position
         if position is None or position < 0:
             return None
@@ -92,7 +92,7 @@ class EveccaCover(CoordinatorEntity[EveccaCoordinator], CoverEntity):
 
     @property
     def current_cover_tilt_position(self) -> int | None:
-        """Return tilt feedback for the binary hung-open mode."""
+        """Return reported tilt feedback for the binary hung-open mode."""
         if not self.supported_features & CoverEntityFeature.OPEN_TILT:
             return None
         mode = self.device.window_mode
@@ -104,27 +104,42 @@ class EveccaCover(CoordinatorEntity[EveccaCoordinator], CoverEntity):
 
     @property
     def is_closed(self) -> bool | None:
-        """Return whether the window is closed."""
+        """Return whether the window is stopped at 0% with no command pending."""
+        if self.device.moving or self.coordinator.target(self.device_id) is not None:
+            return False
         position = self.current_cover_position
         if position is None:
             return None
         return position == 0
 
+    @property
+    def is_closing(self) -> bool:
+        """Return whether a closing command awaits confirmation."""
+        target = self.coordinator.target(self.device_id)
+        return target is not None and target.is_closing
+
+    @property
+    def is_opening(self) -> bool:
+        """Return whether an opening or tilt command awaits confirmation."""
+        target = self.coordinator.target(self.device_id)
+        return target is not None and not target.is_closing
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose raw reported telemetry for safety automations."""
+        return {
+            "optimistic": self.coordinator.target(self.device_id) is not None,
+            "confirmed_position": self.device.position,
+            "confirmed_window_mode": self.device.window_mode,
+        }
+
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the window."""
-        await self._async_window_action(
-            ACTION_OPEN,
-            position=100,
-            window_mode=WINDOW_MODE_OPEN,
-        )
+        await self._async_window_action(ACTION_OPEN, position=100)
 
     async def async_close_cover(self, **kwargs: Any) -> None:
         """Close the window."""
-        await self._async_window_action(
-            ACTION_CLOSE,
-            position=0,
-            window_mode=WINDOW_MODE_CLOSED,
-        )
+        await self._async_window_action(ACTION_CLOSE, position=0)
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
         """Stop the window."""
@@ -137,21 +152,13 @@ class EveccaCover(CoordinatorEntity[EveccaCoordinator], CoverEntity):
 
     async def async_open_cover_tilt(self, **kwargs: Any) -> None:
         """Open the window in tilt/hung-open mode."""
-        await self._async_window_action(
-            ACTION_TILT_OPEN,
-            window_mode=WINDOW_MODE_TILT_OPEN,
-        )
+        await self._async_window_action(ACTION_TILT_OPEN, tilt=True)
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """Move the window to an opening percentage."""
         position = int(kwargs[ATTR_POSITION])
         await self._async_window_action(
-            value=position,
-            dpid=DPID_POSITION_SET,
-            position=position,
-            window_mode=(
-                WINDOW_MODE_CLOSED if position == 0 else WINDOW_MODE_OPEN
-            ),
+            position, dpid=DPID_POSITION_SET, position=position
         )
 
     async def _async_window_action(
@@ -160,20 +167,12 @@ class EveccaCover(CoordinatorEntity[EveccaCoordinator], CoverEntity):
         *,
         dpid: int = DPID_ACTION,
         position: int | None = None,
-        window_mode: str,
+        tilt: bool = False,
     ) -> None:
-        """Send one window command with an optimistic target."""
-        self.coordinator.set_window_target(
-            self.device_id,
-            position=position,
-            window_mode=window_mode,
-        )
+        """Send one window command and wait for telemetry to confirm it."""
+        self.coordinator.set_target(self.device_id, position=position, tilt=tilt)
         try:
-            await self.coordinator.async_action(
-                self.device_id,
-                value,
-                dpid=dpid,
-            )
+            await self.coordinator.async_action(self.device_id, value, dpid=dpid)
         except HomeAssistantError:
             self.coordinator.clear_target(self.device_id)
             raise
